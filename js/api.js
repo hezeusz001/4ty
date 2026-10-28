@@ -93,24 +93,35 @@ throw err;
 // 3. Követett források cikkei – nem veszhetnek el a globális top 150 miatt.
 // Forrásonként külön, kis lekérést végzünk, így sok követésnél sem kérjük le az egész adatbázist.
 export async function fetchArticlesBySourceIds(sourceIds, perSourceLimit = 10) {
-const ids = [...new Set((Array.isArray(sourceIds) ? sourceIds : []).filter(Boolean))];
+const ids = [...new Set((Array.isArray(sourceIds) ? sourceIds : [])
+.filter(id => (typeof id === 'string' && id.trim().length > 0) ||
+  (typeof id === 'number' && Number.isFinite(id)))
+.map(String))];
 if (!ids.length) return [];
 
-const batches = [];
-for (let i = 0; i < ids.length; i += 10) batches.push(ids.slice(i, i + 10));
+const limit = typeof perSourceLimit === 'number' && Number.isFinite(perSourceLimit)
+? Math.max(1, Math.min(100, Math.floor(perSourceLimit))) : 10;
+const MAX_PARALLEL_SOURCE_REQUESTS = 4;
 
 try {
-const results = await Promise.all(batches.map(async batch => {
-const filter = batch.map(id => `"${String(id).replace(/"/g, '')}"`).join(',');
-const limit = Math.max(10, Math.min(100, perSourceLimit * batch.length));
-const url = `${CONFIG.REST_URL}/articles?select=${ARTICLE_FIELDS}&source_id=in.(${encodeURIComponent(filter)})&order=published_at.desc&limit=${limit}`;
+const articles = [];
+for (let i = 0; i < ids.length; i += MAX_PARALLEL_SOURCE_REQUESTS) {
+// A limit minden forrás saját lekérdezésére vonatkozik, nem a közös cikkhalmazra.
+const results = await Promise.allSettled(ids.slice(i, i + MAX_PARALLEL_SOURCE_REQUESTS).map(async id => {
+const filter = encodeURIComponent(JSON.stringify(id));
+const url = `${CONFIG.REST_URL}/articles?select=${ARTICLE_FIELDS}&source_id=eq.${filter}&order=published_at.desc,id.asc&limit=${limit}`;
 const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
 if (!res.ok) throw new Error(`Követett cikkek DB hiba: ${res.status}`);
 const data = await res.json();
 if (!Array.isArray(data)) throw new Error('Érvénytelen cikkadat-válasz.');
 return data.map(mapArticle);
 }));
-return results.flat();
+// Megvárjuk a már elindított kéréseket, de hiba után nem indítunk újabb adagot.
+const failed = results.find(result => result.status === 'rejected');
+if (failed) throw failed.reason;
+for (const result of results) articles.push(...result.value);
+}
+return articles;
 } catch (err) {
 console.warn("Nem sikerült a követett források cikkeit lekérni:", err);
 throw err;
