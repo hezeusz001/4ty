@@ -14,6 +14,7 @@ $configJs = '/js/config.js';
 $imports = [
     $authJs => $authJs . '?v=' . assetVersion($authJs),
     $configJs => $configJs . '?v=' . assetVersion($configJs),
+    '4ty/config' => $configJs . '?v=' . assetVersion($configJs),
 ];
 ?>
 <!doctype html><html lang="hu"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>4ty Admin</title><link rel="stylesheet" href="<?= htmlspecialchars($adminCss . '?v=' . assetVersion($adminCss), ENT_QUOTES, 'UTF-8') ?>"></head><body>
