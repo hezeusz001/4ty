@@ -200,10 +200,12 @@ export async function incrementCommunitySourceByUrl(feedUrl, enableSourceLocally
 
 export async function fetchCommunitySources() {
   try {
-    const response = await fetch(`${CONFIG.REST_URL}/sources_catalog?select=*&is_community=eq.true&order=add_count.desc&limit=300`, { headers: submitterHeaders });
-    if (!response.ok) throw new Error();
-    return await response.json();
-  } catch (_) {
-    return [];
+    const response = await fetch(`${CONFIG.REST_URL}/sources_catalog?select=*&is_community=eq.true&order=add_count.desc&limit=300`, { headers: submitterHeaders, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`Közösségi források: HTTP ${response.status}`);
+    const data = await response.json();
+    if (!Array.isArray(data)) throw new Error('Érvénytelen közösségi forráslista.');
+    return data;
+  } catch (error) {
+    throw error;
   }
 }

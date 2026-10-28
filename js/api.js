@@ -79,13 +79,14 @@ clickbaitCount: 0
 // 2. Általános sajtóhírek lekérése – könnyű, globális fő feed
 export async function fetchArticlesFromDb() {
 try {
-const res = await fetch(`${CONFIG.REST_URL}/articles?select=${ARTICLE_FIELDS}&order=published_at.desc&limit=150`, { headers });
+const res = await fetch(`${CONFIG.REST_URL}/articles?select=${ARTICLE_FIELDS}&order=published_at.desc&limit=150`, { headers, signal: AbortSignal.timeout(15000) });
 if (!res.ok) throw new Error(`Articles DB hiba: ${res.status}`);
 const data = await res.json();
-return Array.isArray(data) ? data.map(mapArticle) : [];
+if (!Array.isArray(data)) throw new Error('Érvénytelen cikkadat-válasz.');
+return data.map(mapArticle);
 } catch (err) {
 console.warn("Nem sikerült elérni az articles táblát:", err);
-return [];
+throw err;
 }
 }
 
@@ -103,15 +104,16 @@ const results = await Promise.all(batches.map(async batch => {
 const filter = batch.map(id => `"${String(id).replace(/"/g, '')}"`).join(',');
 const limit = Math.max(10, Math.min(100, perSourceLimit * batch.length));
 const url = `${CONFIG.REST_URL}/articles?select=${ARTICLE_FIELDS}&source_id=in.(${encodeURIComponent(filter)})&order=published_at.desc&limit=${limit}`;
-const res = await fetch(url, { headers });
+const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
 if (!res.ok) throw new Error(`Követett cikkek DB hiba: ${res.status}`);
 const data = await res.json();
-return Array.isArray(data) ? data.map(mapArticle) : [];
+if (!Array.isArray(data)) throw new Error('Érvénytelen cikkadat-válasz.');
+return data.map(mapArticle);
 }));
 return results.flat();
 } catch (err) {
 console.warn("Nem sikerült a követett források cikkeit lekérni:", err);
-return [];
+throw err;
 }
 }
 
@@ -126,7 +128,7 @@ async function loadSourceRows() {
   if (sourcePending) return sourcePending;
   sourcePending = (async () => {
     const fields = `${SOURCE_FIELDS},is_active`;
-    const res = await fetch(`${CONFIG.REST_URL}/sources_catalog?select=${fields}&order=title.asc`, { headers });
+    const res = await fetch(`${CONFIG.REST_URL}/sources_catalog?select=${fields}&order=title.asc`, { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`sources_catalog hiba: ${res.status}`);
     const data = await res.json();
     if (!Array.isArray(data)) throw new Error('Érvénytelen forráskatalógus válasz.');
@@ -156,16 +158,17 @@ image_url: s.image_url || ''
 }));
 } catch (e) {
 console.warn("Forráskatalógus hiba:", e);
-return [];
+throw e;
 }
 }
 
 // 3. Reflektor bejegyzések lekérése
 export async function fetchReflektorPostsFromDb() {
 try {
-const res = await fetch(`${CONFIG.REST_URL}/reflektor_posts?select=${REFLEKTOR_FIELDS}&order=published_at.desc`, { headers });
+const res = await fetch(`${CONFIG.REST_URL}/reflektor_posts?select=${REFLEKTOR_FIELDS}&order=published_at.desc`, { headers, signal: AbortSignal.timeout(15000) });
 if (!res.ok) throw new Error(`Reflektor DB hiba: ${res.status}`);
 const data = await res.json();
+if (!Array.isArray(data)) throw new Error('Érvénytelen Reflektor-válasz.');
 return data.map(post => ({
 id: post.id,
 isReflektor: true,
@@ -189,7 +192,7 @@ clickbaitCount: 0
 }));
 } catch (err) {
 console.warn("Nem sikerült elérni a reflektor_posts táblát:", err);
-return [];
+throw err;
 }
 }
 
@@ -199,12 +202,9 @@ try {
 // A médiaelemeket és a forrásmetaadatokat párhuzamosan kérjük le.
 // A 04-es javítás közös forrás-cache-e továbbra is működik.
 const [sourcesData, data] = await Promise.all([
-  loadSourceRows().catch(err => {
-    console.warn('Médiaforrások metaadatai nem érhetők el:', err);
-    return [];
-  }),
+  loadSourceRows(),
   (async () => {
-    const res = await fetch(`${CONFIG.REST_URL}/media_items?select=${MEDIA_FIELDS}&order=published_at.desc&limit=2500`, { headers });
+    const res = await fetch(`${CONFIG.REST_URL}/media_items?select=${MEDIA_FIELDS}&order=published_at.desc&limit=2500`, { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`Média DB hiba: ${res.status}`);
     const rows = await res.json();
     if (!Array.isArray(rows)) throw new Error('Érvénytelen médiaadat-válasz.');
@@ -261,7 +261,7 @@ submitted_by: meta.submitted_by || null
 });
 } catch (err) {
 console.warn("Nem sikerült elérni a media_items táblát:", err);
-return [];
+throw err;
 }
 }
 
@@ -303,14 +303,15 @@ export async function fetchUserSubscriptions(_legacyUserUuid) {
     const { userId, authHeaders } = await subscriptionAuth();
     const response = await fetch(
       `${CONFIG.REST_URL}/user_subscriptions?select=source_id&user_uuid=eq.${encodeURIComponent(userId)}`,
-      { headers: authHeaders }
+      { headers: authHeaders, signal: AbortSignal.timeout(15000) }
     );
     if (!response.ok) throw new Error(`Követések lekérése: HTTP ${response.status}`);
     const data = await response.json();
-    return Array.isArray(data) ? data.map(item => item.source_id) : [];
+    if (!Array.isArray(data)) throw new Error('Érvénytelen követésadat-válasz.');
+    return data.map(item => String(item.source_id));
   } catch (error) {
     console.warn('Követések lekérése sikertelen:', error);
-    return [];
+    throw error;
   }
 }
 

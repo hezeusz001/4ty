@@ -696,8 +696,18 @@ window.dispatchEvent(new CustomEvent('4ty:muted-categories-changed', {detail:{mu
 renderFeed();
 }
 
+let feedRefreshPending = null;
 export async function loadAndRefreshFeedData() {
+if (feedRefreshPending) return feedRefreshPending;
+feedRefreshPending = refreshFeedData();
+try { return await feedRefreshPending; }
+finally { feedRefreshPending = null; }
+}
+
+async function refreshFeedData() {
 try {
+const previousArticles = articlesData;
+const failures = [];
 const results = await Promise.allSettled([
 fetchArticlesFromDb(),
 fetchSourcesFromDb(),
@@ -706,7 +716,11 @@ fetchMediaFromDb(),
 fetchCommunitySources()
 ]);
 
-let mainArticles = [];
+const labels = ['hírek', 'forráskatalógus', 'Reflektor', 'média', 'közösségi források'];
+results.forEach((result, index) => {
+if (result.status === 'rejected') failures.push(labels[index]);
+});
+let mainArticles = previousArticles;
 if (results[0].status === 'fulfilled' && Array.isArray(results[0].value)) {
 mainArticles = results[0].value;
 }
@@ -723,33 +737,50 @@ if (results[4].status === 'fulfilled' && Array.isArray(results[4].value)) {
 communitySourcesCache = results[4].value;
 }
 
-let subscribedIds = [];
+let subscribedIds = [...userSubscriptions];
 // A nyilvános hírekhez nem szükséges megvárni az Auth-szolgáltatást.
-articlesData = mainArticles;
+// A követések eredményéig a korábban betöltött személyes cikkek is láthatók maradnak.
+const previewArticles = new Map();
+for (const article of [...mainArticles, ...previousArticles]) {
+const key = article?.id || article?.url;
+if (key && !previewArticles.has(key)) previewArticles.set(key, article);
+}
+articlesData = [...previewArticles.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 renderFeed();
+try {
 const subscriptions = await fetchUserSubscriptions();
 if (Array.isArray(subscriptions)) {
 subscribedIds = subscriptions;
 userSubscriptions = new Set(subscribedIds);
 }
+} catch (_) { failures.push('követések'); }
 
 // A globális top 150 mellé mindig behúzzuk a követett források legfrissebb cikkeit.
-const followedArticles = subscribedIds.length
-? await fetchArticlesBySourceIds(subscribedIds, 10)
-: [];
+let followedArticles = [];
+try {
+followedArticles = subscribedIds.length ? await fetchArticlesBySourceIds(subscribedIds, 10) : [];
+} catch (_) { failures.push('követett források hírei'); }
+
+// Részleges hiba esetén a korábban elérhető személyes cikkek sem veszhetnek el.
+const retainedArticles = failures.includes('követések') || failures.includes('követett források hírei')
+? previousArticles : [];
 
 const merged = new Map();
-for (const article of [...mainArticles, ...followedArticles]) {
+for (const article of [...mainArticles, ...followedArticles, ...retainedArticles]) {
 const key = article?.id || article?.url;
 if (key && !merged.has(key)) merged.set(key, article);
 }
 articlesData = [...merged.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
 // A cache továbbra is korlátozott marad; nem növeljük kontrollálatlanul a localStorage méretét.
-try { localStorage.setItem('4ty_cached_articles', JSON.stringify(articlesData.slice(0, 200))); }
+try {
+if (!failures.length) localStorage.setItem('4ty_cached_articles', JSON.stringify(articlesData.slice(0, 200)));
+}
 catch (_) { /* A nem elérhető cache nem akadályozhatja a hírfolyamot. */ }
 
 renderFeed();
+if (failures.length) showToast(`Nem minden adat frissült (${failures.join(', ')}). A korábbi adatok megmaradtak, ahol elérhetők.`);
+return { ok: failures.length === 0, failures };
 } catch (err) {
 console.warn("Frissítési hiba:", err);
 throw err;
@@ -1780,8 +1811,8 @@ refreshFeedBtn.onclick = async () => {
 const icon = document.getElementById('refreshIcon');
 if (icon) icon.classList.add('animate-spin');
 try {
-await loadAndRefreshFeedData();
-showToast('Hírfolyam frissítve!');
+const result = await loadAndRefreshFeedData();
+if (result.ok) showToast('Hírfolyam frissítve!');
 } catch (e) {
 showToast('Hiba a frissítés során.');
 } finally {
