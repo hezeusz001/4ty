@@ -38,10 +38,37 @@ export async function getOrCreateUserUuid() {
   return user.id;
 }
 
+// Sérült helyi adat vagy tiltott tárhely ne akadályozza a modul indulását.
+// A beolvasás nem töröl és nem ír felül tárolt adatot, Auth-kulcsot sem érint.
+function readStoredValue(key, fallback) {
+try { return localStorage.getItem(key) ?? fallback; }
+catch (_) { return fallback; }
+}
+
+function readStoredJson(key, fallback, validate) {
+try {
+const raw = readStoredValue(key, null);
+if (raw === null) return fallback;
+const value = JSON.parse(raw);
+return validate(value) ? value : fallback;
+} catch (_) { return fallback; }
+}
+
+function readStoredStrings(key) {
+return readStoredJson(key, [], Array.isArray).filter(value => typeof value === 'string');
+}
+
+function readStoredIds(key) {
+return readStoredJson(key, [], Array.isArray)
+.filter(value => (typeof value === 'string' && value.length > 0) ||
+  (typeof value === 'number' && Number.isFinite(value)))
+.map(String);
+}
+
 let userProfile = loadUserProfile();
 let sectionOrder;
 try {
-  const savedOrder = JSON.parse(localStorage.getItem('4ty_section_order') || 'null');
+  const savedOrder = readStoredStrings('4ty_section_order');
   const validSaved = Array.isArray(savedOrder) ? savedOrder.filter(key => DEFAULT_SECTION_ORDER.includes(key)) : [];
   sectionOrder = [...new Set([...validSaved, ...DEFAULT_SECTION_ORDER])];
 } catch (_) {
@@ -53,7 +80,16 @@ let reflektorArticles = [];
 let dbMediaItems = [];
 let communitySourcesCache = [];
 let userSubscriptions = new Set(); // 👈 Felhasználó által követett forrás ID-k
-let articlesData = JSON.parse(localStorage.getItem('4ty_cached_articles') || '[]');
+let articlesData = readStoredJson('4ty_cached_articles', [], Array.isArray).filter(item =>
+item !== null && typeof item === 'object' && !Array.isArray(item) &&
+((typeof item.id === 'string' && item.id.length > 0) ||
+ (typeof item.id === 'number' && Number.isFinite(item.id))) &&
+['title', 'original_title', 'cleanTitle', 'clean_title', 'source', 'source_name',
+ 'cat', 'category', 'lead', 'url', 'imageUrl', 'image_url'].every(key =>
+ item[key] == null || typeof item[key] === 'string') &&
+['bullets', 'tags'].every(key => item[key] == null ||
+ (Array.isArray(item[key]) && item[key].every(value => typeof value === 'string')))
+);
 let newsSearchQuery = '';
 let mediaSearchQuery = '';
 // Egységes keresési normalizálás: az ékezetek és a kis-/nagybetűk nem számítanak.
@@ -63,20 +99,25 @@ const normalizeSearchText = value => String(value ?? '')
   .toLocaleLowerCase('hu-HU');
 
 // Az utoljára megnyitott nézet visszaállítása frissítés után.
-const savedPillar = localStorage.getItem('4ty_current_pillar');
+const savedPillar = readStoredValue('4ty_current_pillar', 'news');
 let currentPillar = ['news', 'video'].includes(savedPillar) ? savedPillar : 'news';
-let currentNewsCategory = localStorage.getItem('4ty_current_news_category') || 'all';
-let currentVideoCategory = localStorage.getItem('4ty_current_video_category') || 'video';
+const savedNewsCategory = readStoredValue('4ty_current_news_category', 'all');
+let currentNewsCategory = ['all', 'saved', 'news_hub', ...DEFAULT_SECTION_ORDER].includes(savedNewsCategory)
+? savedNewsCategory : 'all';
+const savedVideoCategory = readStoredValue('4ty_current_video_category', 'video');
+let currentVideoCategory = ['video', 'podcast', 'my_videos', 'my_podcasts', 'media_hub', 'saved'].includes(savedVideoCategory)
+? savedVideoCategory : 'video';
 let currentSortMode = 'chrono';
-let antiClickbaitActive = JSON.parse(localStorage.getItem('4ty_anti_clickbait') || 'true');
-let showShortsActive = JSON.parse(localStorage.getItem('4ty_show_shorts') || 'false');
-let hideReadActive = JSON.parse(localStorage.getItem('4ty_hide_read') || 'false');
+const isBoolean = value => typeof value === 'boolean';
+let antiClickbaitActive = readStoredJson('4ty_anti_clickbait', true, isBoolean);
+let showShortsActive = readStoredJson('4ty_show_shorts', false, isBoolean);
+let hideReadActive = readStoredJson('4ty_hide_read', false, isBoolean);
 
-let hiddenSources = JSON.parse(localStorage.getItem('4ty_hidden_sources') || '[]');
-let readArticles = new Set(JSON.parse(localStorage.getItem('4ty_read') || '[]'));
-let savedArticles = new Set(JSON.parse(localStorage.getItem('4ty_saved') || '[]'));
-let upvotedItems = new Set(JSON.parse(localStorage.getItem('4ty_upvoted') || '[]'));
-let clickbaitedItems = new Set(JSON.parse(localStorage.getItem('4ty_clickbaited') || '[]'));
+let hiddenSources = readStoredStrings('4ty_hidden_sources');
+let readArticles = new Set(readStoredIds('4ty_read'));
+let savedArticles = new Set(readStoredIds('4ty_saved'));
+let upvotedItems = new Set(readStoredIds('4ty_upvoted'));
+let clickbaitedItems = new Set(readStoredIds('4ty_clickbaited'));
 
 export function saveState() {
 try {
