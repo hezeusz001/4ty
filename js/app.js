@@ -2,6 +2,7 @@
 import { CONFIG, DEFAULT_SECTION_ORDER, CATEGORY_META } from '4ty/config';
 import {
 fetchArticlesFromDb,
+fetchArticlesByIds,
 fetchArticlesBySourceIds,
 fetchSourcesFromDb,
 fetchReflektorPostsFromDb,
@@ -79,7 +80,8 @@ let reflektorArticles = [];
 let dbMediaItems = [];
 let communitySourcesCache = [];
 let userSubscriptions = new Set(); // 👈 Felhasználó által követett forrás ID-k
-let articlesData = readStoredJson('4ty_cached_articles', [], Array.isArray).filter(item =>
+function isValidStoredArticle(item) {
+return (
 item !== null && typeof item === 'object' && !Array.isArray(item) &&
 ((typeof item.id === 'string' && item.id.length > 0) ||
  (typeof item.id === 'number' && Number.isFinite(item.id))) &&
@@ -89,6 +91,8 @@ item !== null && typeof item === 'object' && !Array.isArray(item) &&
 ['bullets', 'tags'].every(key => item[key] == null ||
  (Array.isArray(item[key]) && item[key].every(value => typeof value === 'string')))
 );
+}
+let articlesData = readStoredJson('4ty_cached_articles', [], Array.isArray).filter(isValidStoredArticle);
 let newsSearchQuery = '';
 let mediaSearchQuery = '';
 // Egységes keresési normalizálás: az ékezetek és a kis-/nagybetűk nem számítanak.
@@ -115,10 +119,16 @@ let hideReadActive = readStoredJson('4ty_hide_read', false, isBoolean);
 let hiddenSources = readStoredStrings('4ty_hidden_sources');
 let readArticles = new Set(readStoredIds('4ty_read'));
 let savedArticles = new Set(readStoredIds('4ty_saved'));
+let savedContentItems = readStoredJson('4ty_saved_items', [], Array.isArray).filter(entry =>
+entry && ['news', 'media'].includes(entry.kind) && isValidStoredArticle(entry.item) &&
+savedArticles.has(String(entry.item.id)));
+let savedHydrationPending = null;
+let savedContentWriteWarning = false;
 let upvotedItems = new Set(readStoredIds('4ty_upvoted'));
 let clickbaitedItems = new Set(readStoredIds('4ty_clickbaited'));
 
 export function saveState() {
+rememberSavedContent();
 try {
 localStorage.setItem('4ty_hidden_sources', JSON.stringify(hiddenSources));
 localStorage.setItem('4ty_read', JSON.stringify(Array.from(readArticles)));
@@ -130,6 +140,55 @@ localStorage.setItem('4ty_anti_clickbait', JSON.stringify(antiClickbaitActive));
 localStorage.setItem('4ty_show_shorts', JSON.stringify(showShortsActive));
 localStorage.setItem('4ty_hide_read', JSON.stringify(hideReadActive));
 } catch (e) {}
+}
+
+function rememberSavedContent(extraNews = [], extraMedia = []) {
+const items = new Map();
+const add = (kind, item) => {
+if (isValidStoredArticle(item) && savedArticles.has(String(item.id))) {
+items.set(`${kind}:${item.id}`, { kind, item });
+}
+};
+for (const entry of savedContentItems) add(entry.kind, entry.item);
+for (const item of [...articlesData, ...reflektorArticles, ...extraNews]) add('news', item);
+for (const item of [...dbMediaItems, ...extraMedia]) add('media', item);
+savedContentItems = [...items.values()];
+try {
+localStorage.setItem('4ty_saved_items', JSON.stringify(savedContentItems));
+savedContentWriteWarning = false;
+} catch (_) {
+if (!savedContentWriteWarning) showToast('A mentett tartalmak helyi másolatát nem sikerült tárolni.');
+savedContentWriteWarning = true;
+}
+}
+
+function getSavedContent(kind) {
+const items = new Map();
+const current = kind === 'media' ? dbMediaItems : [...reflektorArticles, ...articlesData];
+for (const item of [...savedContentItems.filter(entry => entry.kind === kind).map(entry => entry.item), ...current]) {
+if (item?.id != null && savedArticles.has(String(item.id))) items.set(String(item.id), item);
+}
+return [...items.values()];
+}
+
+async function hydrateSavedContent() {
+if (savedHydrationPending) return savedHydrationPending;
+savedHydrationPending = (async () => {
+rememberSavedContent();
+const known = new Set(savedContentItems.map(entry => String(entry.item.id)));
+const missing = [...savedArticles].filter(id => !known.has(id));
+if (!missing.length) return;
+const results = await Promise.allSettled([fetchArticlesByIds(missing), fetchMediaFromDb(missing)]);
+rememberSavedContent(
+  results[0].status === 'fulfilled' ? results[0].value : [],
+  results[1].status === 'fulfilled' ? results[1].value : []
+);
+if (results.some(result => result.status === 'rejected')) {
+showToast('Néhány mentett tartalom most nem tölthető be. A helyi másolatok megmaradtak.');
+}
+})();
+try { return await savedHydrationPending; }
+finally { savedHydrationPending = null; }
 }
 
 export function showToast(msg) {
@@ -249,6 +308,7 @@ window.location.reload();
 
 // 📥 Fiók és beállítások exportálása JSON fájlba
 export async function exportUserAccountBackup() {
+rememberSavedContent();
 const backupData = {
 version: '1.0',
 exportedAt: new Date().toISOString(),
@@ -262,6 +322,7 @@ hiddenSources,
 userProfile
 },
 savedArticles: Array.from(savedArticles),
+savedItems: savedContentItems,
 readArticles: Array.from(readArticles)
 };
 
@@ -291,6 +352,11 @@ throw new Error("Érvénytelen mentési fájl formátum.");
 }
 
 // Importáláskor soha nem írjuk felül a Supabase Auth-identitást.
+if (data.savedItems !== undefined) {
+if (!Array.isArray(data.savedItems)) throw new Error('Érvénytelen mentett tartalomlista.');
+const entries = data.savedItems.filter(entry => entry && ['news', 'media'].includes(entry.kind) && isValidStoredArticle(entry.item));
+localStorage.setItem('4ty_saved_items', JSON.stringify(entries));
+}
 localStorage.setItem('4ty_section_order', JSON.stringify(data.settings.sectionOrder || []));
 localStorage.setItem('4ty_anti_clickbait', JSON.stringify(data.settings.antiClickbaitActive ?? true));
 localStorage.setItem('4ty_show_shorts', JSON.stringify(data.settings.showShortsActive ?? false));
@@ -342,6 +408,7 @@ export function closeSavedLibrary() {
   refreshSavedSearchField();
 }
 export function openSavedLibrary(tab = 'all') {
+  rememberSavedContent();
   // A Mentett oldal a Beállítások nézettel kölcsönösen kizáró állapot.
   if (window.matchMedia('(min-width: 1024px)').matches) {
     document.body.classList.remove('desktop-settings-page');
@@ -391,9 +458,8 @@ export function openSavedLibrary(tab = 'all') {
       btn.setAttribute('aria-pressed',String(savedLibraryTab===key));
       btn.onclick=()=>{savedLibraryTab=key;redraw()};tabs.appendChild(btn);
     }
-    const news = [...reflektorArticles.map(a => ({...a, isReflektor:true, cat:'reflektor'})), ...articlesData]
-      .filter(a => a?.id != null && savedArticles.has(String(a.id)));
-    const media = dbMediaItems.filter(a => a?.id != null && savedArticles.has(String(a.id)));
+    const news = getSavedContent('news');
+    const media = getSavedContent('media');
     const newsUnique = new Map(news.map(a => [String(a.id), a]));
     const mediaUnique = new Map(media.map(a => [String(a.id), a]));
     const showNews = savedLibraryTab !== 'media';
@@ -409,7 +475,9 @@ export function openSavedLibrary(tab = 'all') {
     const visibleMedia = [...mediaUnique.values()].filter(matches);
     const shownCount = (showNews ? visibleNews.length : 0) + (showMedia ? visibleMedia.length : 0);
     const summary = view.querySelector('#savedLibrarySummary');
-    if (summary) summary.textContent = `${newsCount + mediaCount} mentett tartalom · ${newsCount} hír · ${mediaCount} média`;
+    const availableIds = new Set([...newsUnique.keys(), ...mediaUnique.keys()]);
+    const missingCount = [...savedArticles].filter(id => !availableIds.has(id)).length;
+    if (summary) summary.textContent = `${newsCount + mediaCount} mentett tartalom · ${newsCount} hír · ${mediaCount} média${missingCount ? ` · ${missingCount} mentés tartalma jelenleg nem elérhető` : ''}`;
     const shown = view.querySelector('#savedLibraryShown');
     if (shown) shown.textContent = `${shownCount} találat`;
     items.replaceChildren();
@@ -473,6 +541,9 @@ export function openSavedLibrary(tab = 'all') {
   };
   savedLibraryRedraw = redraw;
   redraw();
+  hydrateSavedContent().then(() => {
+    if (view.isConnected) redraw();
+  }).catch(error => console.warn('Mentett tartalmak betöltési hiba:', error));
 }
 
 export function openSavedContent(pillar) {
@@ -706,6 +777,8 @@ finally { feedRefreshPending = null; }
 
 async function refreshFeedData() {
 try {
+// A korábbi feed-cache-ben még megtalálható régi mentéseket frissítés előtt őrizzük meg.
+rememberSavedContent();
 const previousArticles = articlesData;
 const failures = [];
 const results = await Promise.allSettled([
@@ -780,6 +853,8 @@ catch (_) { /* A nem elérhető cache nem akadályozhatja a hírfolyamot. */ }
 
 renderFeed();
 if (failures.length) showToast(`Nem minden adat frissült (${failures.join(', ')}). A korábbi adatok megmaradtak, ahol elérhetők.`);
+rememberSavedContent();
+savedLibraryRedraw?.();
 return { ok: failures.length === 0, failures };
 } catch (err) {
 console.warn("Frissítési hiba:", err);
@@ -809,7 +884,7 @@ return;
 }
 
 // A kategóriánkénti hivatalos/közösségi szűrés lentebb történik.
-let activeList = [...dbMediaItems].filter(item =>
+let activeList = (currentVideoCategory === 'saved' ? getSavedContent('media') : [...dbMediaItems]).filter(item =>
 !isSourceHidden(item.source || item.source_name)
 );
 
@@ -1040,7 +1115,7 @@ if (badge) badge.innerText = `${Object.keys(groupedChannels).length} műsor`;
 
 const savedMediaHead = document.getElementById('savedMediaCountHeader');
 if (savedMediaHead) {
-const savedMediaCount = dbMediaItems.filter(m => savedArticles.has(m.id.toString())).length;
+const savedMediaCount = getSavedContent('media').length;
 savedMediaHead.innerText = savedMediaCount;
 }
 
@@ -1052,7 +1127,7 @@ renderNewsHubView(feedContainer);
 return;
 }
 
-let pool = [...reflektorArticles.map(item => ({...item, isReflektor: true, cat: 'reflektor'})), ...articlesData.map(item => ((item.cat || item.category) === 'reflektor' ? {...item, isReflektor: true, cat: 'reflektor'} : item))].filter(item => {
+let pool = (currentNewsCategory === 'saved' ? getSavedContent('news') : [...reflektorArticles.map(item => ({...item, isReflektor: true, cat: 'reflektor'})), ...articlesData.map(item => ((item.cat || item.category) === 'reflektor' ? {...item, isReflektor: true, cat: 'reflektor'} : item))]).filter(item => {
 if (isSourceHidden(item.source || item.source_name)) return false;
 if (!item || item.id == null) return false;
 if (hideReadActive && readArticles.has(String(item.id))) return false;
@@ -1188,7 +1263,7 @@ if (badge) badge.innerText = `${visibleCount} db`;
 
 const savedHead = document.getElementById('savedCountHeader');
 if (savedHead) {
-const savedNewsCount = [...reflektorArticles, ...articlesData].filter(a => a?.id != null && savedArticles.has(String(a.id))).length;
+const savedNewsCount = getSavedContent('news').length;
 savedHead.innerText = savedNewsCount;
 }
 
@@ -1577,7 +1652,7 @@ function attachCardEventListeners(root = document, onSavedChange = null) {
      btn.classList.toggle('text-emerald-600', saved);
      btn.classList.toggle('border-emerald-500', saved);
      const count = document.getElementById('savedMediaCountHeader');
-     if (count) count.textContent = dbMediaItems.filter(item => savedArticles.has(String(item.id))).length;
+     if (count) count.textContent = getSavedContent('media').length;
      if (onSavedChange) onSavedChange();
       else if (currentVideoCategory === 'saved' && !saved) renderFeed();
    };

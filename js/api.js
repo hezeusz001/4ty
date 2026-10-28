@@ -90,6 +90,27 @@ throw err;
 }
 }
 
+// Régi mentések feloldása az aktuális feed időablakától függetlenül.
+async function loadRowsByIds(table, fields, savedIds) {
+const ids = [...new Set((Array.isArray(savedIds) ? savedIds : [])
+.filter(id => typeof id === 'string' && id.length > 0))];
+const rows = [];
+for (let i = 0; i < ids.length; i += 40) {
+const filter = ids.slice(i, i + 40).map(id => JSON.stringify(id)).join(',');
+const res = await fetch(`${CONFIG.REST_URL}/${table}?select=${fields}&id=in.(${encodeURIComponent(filter)})&limit=40`,
+  { headers, signal: AbortSignal.timeout(15000) });
+if (!res.ok) throw new Error(`Mentett tartalmak lekérése: HTTP ${res.status}`);
+const data = await res.json();
+if (!Array.isArray(data)) throw new Error('Érvénytelen mentett tartalom válasz.');
+rows.push(...data);
+}
+return rows;
+}
+
+export async function fetchArticlesByIds(savedIds) {
+return (await loadRowsByIds('articles', ARTICLE_FIELDS, savedIds)).map(mapArticle);
+}
+
 // 3. Követett források cikkei – nem veszhetnek el a globális top 150 miatt.
 // Forrásonként külön, kis lekérést végzünk, így sok követésnél sem kérjük le az egész adatbázist.
 export async function fetchArticlesBySourceIds(sourceIds, perSourceLimit = 10) {
@@ -208,13 +229,14 @@ throw err;
 }
 
 // 4. Média elemek lekérése (Biztonságos kétlépcsős lekérdezés, különválasztott csatorna fix képpel és tulajdonos adatokkal)
-export async function fetchMediaFromDb() {
+export async function fetchMediaFromDb(savedIds = null) {
 try {
 // A médiaelemeket és a forrásmetaadatokat párhuzamosan kérjük le.
 // A 04-es javítás közös forrás-cache-e továbbra is működik.
 const [sourcesData, data] = await Promise.all([
   loadSourceRows(),
   (async () => {
+    if (savedIds !== null) return loadRowsByIds('media_items', MEDIA_FIELDS, savedIds);
     const res = await fetch(`${CONFIG.REST_URL}/media_items?select=${MEDIA_FIELDS}&order=published_at.desc&limit=2500`, { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`Média DB hiba: ${res.status}`);
     const rows = await res.json();
