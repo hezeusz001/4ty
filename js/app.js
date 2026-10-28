@@ -128,6 +128,7 @@ let upvotedItems = new Set(readStoredIds('4ty_upvoted'));
 let clickbaitedItems = new Set(readStoredIds('4ty_clickbaited'));
 
 export function saveState() {
+saveUserProfile(userProfile);
 rememberSavedContent();
 try {
 localStorage.setItem('4ty_hidden_sources', JSON.stringify(hiddenSources));
@@ -247,7 +248,7 @@ const modal = document.getElementById('readerModal');
 const content = document.getElementById('readerContent');
 if (!modal || !content) return;
 
-recordInteraction(item, 'read');
+recordInteraction(item, 'read', userProfile);
 
 content.innerHTML = `
 <h1 class="text-2xl font-bold mb-3 text-black dark:text-white leading-snug">${escapeHtml(item.title)}</h1>
@@ -756,6 +757,9 @@ if (!userProfile.mute_categories) userProfile.mute_categories = [];
 const idx = userProfile.mute_categories.indexOf(catKey);
 if (idx > -1) {
 userProfile.mute_categories.splice(idx, 1);
+if (!userProfile.active_categories.includes(catKey) && catKey !== 'reflektor') {
+userProfile.active_categories.push(catKey);
+}
 showToast(`${label} visszakapcsolva!`);
 } else {
 userProfile.mute_categories.push(catKey);
@@ -1635,6 +1639,8 @@ await loadAndRefreshFeedData();
 };
 
 function attachCardEventListeners(root = document, onSavedChange = null) {
+const findNewsItem = id => [...reflektorArticles, ...articlesData, ...getSavedContent('news')]
+  .find(item => String(item.id) === String(id));
  root.querySelectorAll('.media-bookmark-btn').forEach(btn => {
    btn.onclick = (event) => {
      event.preventDefault(); event.stopPropagation();
@@ -1662,7 +1668,10 @@ btn.onclick = (e) => {
 e.stopPropagation();
 const id = btn.dataset.id;
 const box = Array.from(btn.closest('.news-item')?.querySelectorAll('[id]') || []).find(el => el.id === `tldr-${id}`);
-if (box) box.classList.toggle('hidden');
+if (box) {
+box.classList.toggle('hidden');
+if (!box.classList.contains('hidden')) recordInteraction(findNewsItem(id), 'tldr', userProfile);
+}
 };
 });
 
@@ -1671,7 +1680,11 @@ el.onclick = (e) => {
 e.stopPropagation();
 const id = e.target.closest('.news-item')?.dataset.id;
 if (!id) return;
-if (readArticles.has(id)) readArticles.delete(id); else readArticles.add(id);
+if (readArticles.has(id)) readArticles.delete(id);
+else {
+readArticles.add(id);
+recordInteraction(findNewsItem(id), 'read', userProfile);
+}
 saveState();
 if (onSavedChange) onSavedChange(); else renderFeed();
 };

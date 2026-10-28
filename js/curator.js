@@ -1,8 +1,10 @@
 // js/curator.js - 4ty.hu Kliensoldali Pontozó & Szűrő Motor (v2 - stabil source_id affinity)
 
+import { CATEGORY_META } from '4ty/config';
+
 var PROFILE_STORAGE_KEY = '4ty_user_dna';
 
-export var VALID_CATEGORIES = [
+var LEGACY_CATEGORIES = [
   "gazdasag",
   "tech",
   "auto",
@@ -13,44 +15,64 @@ export var VALID_CATEGORIES = [
   "bulvar"
 ];
 
-var DEFAULT_PROFILE = {
-  active_categories: VALID_CATEGORIES,
-  mute_categories: [],
-  blocked_stems: [],
-  preferred_stems: [],
-  category_weights: {
-    gazdasag: 1.0,
-    tech: 1.0,
-    auto: 1.0,
-    tudomany: 1.0,
-    politika: 1.0,
-    reddit: 1.0,
-    sport: 1.0,
-    bulvar: 1.0
-  },
-  source_affinity: {},
-  summary: "Alapértelmezett, teljes hírfolyam."
-};
+export var VALID_CATEGORIES = [...Object.keys(CATEGORY_META).filter(key => key !== 'reflektor'), 'reddit'];
+
+var DEFAULT_SUMMARY = "Alapértelmezett, teljes hírfolyam.";
 
 export function loadUserProfile() {
   try {
     var raw = localStorage.getItem(PROFILE_STORAGE_KEY);
-    if (!raw) return Object.assign({}, DEFAULT_PROFILE);
-    return Object.assign({}, DEFAULT_PROFILE, JSON.parse(raw));
+    return normalizeUserProfile(raw ? JSON.parse(raw) : null);
   } catch (e) {
-    return Object.assign({}, DEFAULT_PROFILE);
+    return normalizeUserProfile(null);
   }
 }
 
+function normalizeUserProfile(value) {
+  var input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  var strings = values => Array.isArray(values)
+    ? [...new Set(values.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean))] : [];
+  var active = Array.isArray(input.active_categories) ? strings(input.active_categories) : [...VALID_CATEGORIES];
+  // A régi alapértelmezett nyolcas lista korábban nem szűrt; ne rejtse el az új rovatokat.
+  if (active.length === LEGACY_CATEGORIES.length && LEGACY_CATEGORIES.every(key => active.includes(key))) {
+    active = [...VALID_CATEGORIES];
+  }
+  var weights = {};
+  for (var key of VALID_CATEGORIES) {
+    var weight = input.category_weights?.[key];
+    weights[key] = typeof weight === 'number' && Number.isFinite(weight) ? Math.max(0, Math.min(3, weight)) : 1;
+  }
+  var affinity = Object.create(null);
+  if (input.source_affinity && typeof input.source_affinity === 'object' && !Array.isArray(input.source_affinity)) {
+    for (var [source, score] of Object.entries(input.source_affinity)) {
+      if (typeof score === 'number' && Number.isFinite(score)) affinity[source] = Math.max(-5, Math.min(5, score));
+    }
+  }
+  active = active.filter(key => VALID_CATEGORIES.includes(key));
+  var muted = strings(input.mute_categories).map(key => key === 'politics' ? 'politika' : key)
+    .filter(key => VALID_CATEGORIES.includes(key) || key === 'reflektor');
+  return {
+    active_categories: active,
+    mute_categories: [...new Set([...muted, ...VALID_CATEGORIES.filter(key => !active.includes(key))])],
+    blocked_stems: strings(input.blocked_stems),
+    preferred_stems: strings(input.preferred_stems),
+    category_weights: weights,
+    source_affinity: affinity,
+    summary: typeof input.summary === 'string' ? input.summary : DEFAULT_SUMMARY
+  };
+}
+
 export function saveUserProfile(profile) {
+  var normalized = normalizeUserProfile(profile);
   try {
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(normalized));
   } catch (e) {}
+  return normalized;
 }
 
 function normalizeText(str) {
   if (!str) return '';
-  return str
+  return String(str)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -119,7 +141,8 @@ function containsStem(normalizedContent, stem) {
   var normStem = normalizeText(stem);
   if (!normStem) return false;
   if (normStem.length < 3) {
-    var regex = new RegExp('\\b' + normStem + '\\b', 'i');
+    var escapedStem = normStem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var regex = new RegExp('(^|[^\\p{L}\\p{N}])' + escapedStem + '(?=$|[^\\p{L}\\p{N}])', 'iu');
     return regex.test(normalizedContent);
   }
   return normalizedContent.includes(normStem);
@@ -131,6 +154,9 @@ export function isArticleBlocked(article, profile) {
   var itemCat = (article.cat || article.category || '').toLowerCase();
   var rawTags = Array.isArray(article.tags) ? article.tags.map(function(t) { return String(t).toLowerCase(); }) : [];
   var isMuted = profile.mute_categories || [];
+
+  if (VALID_CATEGORIES.includes(itemCat) && Array.isArray(profile.active_categories) &&
+      !profile.active_categories.includes(itemCat)) return true;
 
   if (isMuted.indexOf('politika') !== -1 || isMuted.indexOf('politics') !== -1) {
     if (article.is_politics === true || article.isPolitics === true) return true;
@@ -200,10 +226,10 @@ export function calculatePersonalScore(article, profile) {
   return score;
 }
 
-export function recordInteraction(article, type) {
-  if (!article) return;
+export function recordInteraction(article, type, currentProfile = null) {
+  if (!article) return currentProfile;
   var interactionType = type || 'read';
-  var profile = loadUserProfile();
+  var profile = currentProfile || loadUserProfile();
   var itemCat = (article.cat || article.category || '').toLowerCase();
 
   if (interactionType === 'read' || interactionType === 'tldr') {
@@ -216,18 +242,18 @@ export function recordInteraction(article, type) {
   }
   
   saveUserProfile(profile);
+  return profile;
 }
 
 export function applyAiCuratorConfig(config) {
   var current = loadUserProfile();
   var updated = Object.assign({}, current, {
     active_categories: config.active_categories || current.active_categories,
-    mute_categories: config.mute_categories || [],
-    blocked_stems: config.blocked_stems || [],
-    preferred_stems: config.preferred_stems || [],
+    mute_categories: config.mute_categories ?? current.mute_categories,
+    blocked_stems: config.blocked_stems ?? current.blocked_stems,
+    preferred_stems: config.preferred_stems ?? current.preferred_stems,
     category_weights: Object.assign({}, current.category_weights, config.category_weights || {}),
     summary: config.summary || current.summary
   });
-  saveUserProfile(updated);
-  return updated;
+  return saveUserProfile(updated);
 }
