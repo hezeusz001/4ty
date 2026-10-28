@@ -704,8 +704,7 @@ fetchArticlesFromDb(),
 fetchSourcesFromDb(),
 fetchReflektorPostsFromDb(),
 fetchMediaFromDb(),
-fetchCommunitySources(),
-fetchUserSubscriptions()
+fetchCommunitySources()
 ]);
 
 let mainArticles = [];
@@ -726,8 +725,12 @@ communitySourcesCache = results[4].value;
 }
 
 let subscribedIds = [];
-if (results[5].status === 'fulfilled' && Array.isArray(results[5].value)) {
-subscribedIds = results[5].value;
+// A nyilvános hírekhez nem szükséges megvárni az Auth-szolgáltatást.
+articlesData = mainArticles;
+renderFeed();
+const subscriptions = await fetchUserSubscriptions();
+if (Array.isArray(subscriptions)) {
+subscribedIds = subscriptions;
 userSubscriptions = new Set(subscribedIds);
 }
 
@@ -744,7 +747,8 @@ if (key && !merged.has(key)) merged.set(key, article);
 articlesData = [...merged.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
 // A cache továbbra is korlátozott marad; nem növeljük kontrollálatlanul a localStorage méretét.
-localStorage.setItem('4ty_cached_articles', JSON.stringify(articlesData.slice(0, 200)));
+try { localStorage.setItem('4ty_cached_articles', JSON.stringify(articlesData.slice(0, 200))); }
+catch (_) { /* A nem elérhető cache nem akadályozhatja a hírfolyamot. */ }
 
 renderFeed();
 } catch (err) {
@@ -1683,12 +1687,11 @@ window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 export async function initApp() {
-  try {
-    currentUserUuid = (await ensureAnonymousSession()).id;
-  } catch (error) {
+  // Az Auth a háttérben indul; a kezelőfelület és a nyilvános feed nem vár rá.
+  ensureAnonymousSession().then(user => { currentUserUuid = user.id; }).catch(error => {
     console.warn('Anonim munkamenet nem indítható:', error);
     showToast('A követésekhez szükséges kapcsolat nem érhető el.');
-  }
+  });
 const searchInput = document.getElementById('newsSearchInput');
 const searchClearBtn = document.getElementById('newsSearchClearBtn');
 let searchRenderTimer = null;
