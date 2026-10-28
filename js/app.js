@@ -21,14 +21,13 @@ recordInteraction,
 applyAiCuratorConfig
 } from '4ty/curator';
 import { submitCommunitySource, fetchCommunitySources } from '4ty/submitter';
-import { createArticleHTML, createChannelGroupHTML } from '4ty/renderer';
+import { createArticleHTML, createChannelGroupHTML, sanitizeArticleHtml } from '4ty/renderer';
 import { renderSettingsView, syncAllMuteButtons } from '4ty/settings';
 
 function escapeHtml(str) {
-if (!str) return '';
-const div = document.createElement('div');
-div.textContent = str;
-return div.innerHTML;
+return String(str ?? '').replace(/[&<>"']/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[char]));
 }
 
 // A felhasználóazonosító kizárólag az ellenőrzött Supabase Auth munkamenetből származhat.
@@ -199,7 +198,7 @@ content.innerHTML = `
 <span>${escapeHtml(item.time || 'Kiemelt')}</span>
 </div>
 <div class="article-body text-sm sm:text-base leading-relaxed space-y-4 text-neutral-800 dark:text-neutral-200">
-${item.content || item.lead || 'Nincs szövegtörzs.'}
+${sanitizeArticleHtml(item.content || item.lead || 'Nincs szövegtörzs.')}
 </div>
 `;
 modal.classList.remove('hidden');

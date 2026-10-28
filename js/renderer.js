@@ -2,11 +2,56 @@
 import { CATEGORY_META } from '4ty/config';
 
 function escapeHtml(str) {
-if (!str) return '';
-const div = document.createElement('div');
-div.textContent = str;
-return div.innerHTML;
+return String(str ?? '').replace(/[&<>"']/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[char]));
 }
+
+export function safeContentUrl(value) {
+if (typeof value !== 'string' || !value.trim()) return '';
+try {
+const url = new URL(value, window.location.href);
+return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : '';
+} catch (_) { return ''; }
+}
+
+// Inert HTML-ből új DOM készül: csak szerkesztőségi formázás és ellenőrzött URL marad.
+export function sanitizeArticleHtml(value) {
+const template = document.createElement('template');
+template.innerHTML = String(value ?? '');
+const output = document.createElement('div');
+const allowed = new Set(['P','BR','HR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I',
+  'U','S','UL','OL','LI','BLOCKQUOTE','PRE','CODE','DIV','SPAN','A','IMG','FIGURE',
+  'FIGCAPTION','TABLE','THEAD','TBODY','TFOOT','TR','TH','TD','SUP','SUB']);
+const drop = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','SVG','MATH','TEMPLATE',
+  'FORM','INPUT','BUTTON','TEXTAREA','SELECT','LINK','META','BASE']);
+function copy(node, parent) {
+if (node.nodeType === 3) { parent.appendChild(document.createTextNode(node.textContent)); return; }
+if (node.nodeType !== 1 || drop.has(node.tagName)) return;
+if (!allowed.has(node.tagName)) {
+  for (const child of node.childNodes) copy(child, parent);
+  return;
+}
+const element = document.createElement(node.tagName.toLowerCase());
+if (node.tagName === 'A') {
+  const href = safeContentUrl(node.getAttribute('href'));
+  if (href) { element.href = href; element.target = '_blank'; element.rel = 'noopener noreferrer'; }
+}
+if (node.tagName === 'IMG') {
+  const src = safeContentUrl(node.getAttribute('src'));
+  if (!src) return;
+  element.src = src; element.alt = node.getAttribute('alt') || '';
+  element.loading = 'lazy'; element.referrerPolicy = 'no-referrer';
+}
+if (node.hasAttribute('title')) element.title = node.getAttribute('title');
+for (const child of node.childNodes) copy(child, element);
+parent.appendChild(element);
+}
+for (const node of template.content.childNodes) copy(node, output);
+return output.innerHTML;
+}
+
+let playerSequence = 0;
 
 // Reflektor: tematikus, stabilan kiválasztott illusztráció (nem a cikk eredeti fotója).
 // Nincs API-kulcs és nincs képgenerálási költség. Az adott cikk ugyanazt a képet kapja újratöltéskor.
@@ -41,7 +86,7 @@ function reflektorPhoto(item) {
 
 window.loadYouTubePlayer = function(containerId, youtubeId) {
 const container = document.getElementById(containerId);
-if (!container) return;
+if (!container || typeof youtubeId !== 'string' || !/^[a-zA-Z0-9_-]{11}$/.test(youtubeId)) return;
 container.innerHTML = `
 <iframe class="w-full h-full" src="https://www.youtube-nocookie.com/embed/${escapeHtml(youtubeId)}?autoplay=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 `;
@@ -50,7 +95,7 @@ container.innerHTML = `
 // 🎙️ CSATORNA CSOPORTOSÍTOTT (AKORDEON) NÉZET MÉDIA ELEMEKHEZ
 export function createChannelGroupHTML(channelName, items, options = {}) {
 const firstItem = items[0] || {};
-const channelImage = firstItem.sourceImageUrl || firstItem.source_image_url || '';
+const channelImage = safeContentUrl(firstItem.sourceImageUrl || firstItem.source_image_url || '');
 const count = items.length;
 const isAudio = firstItem.isAudio || firstItem.media_type === 'podcast';
 const badgeColor = isAudio ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' : 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30';
@@ -87,11 +132,12 @@ formattedDate = rawDate;
 }
 
 const displayTitle = escapeHtml(item.cleanTitle || item.clean_title || item.title || '');
-const audioUrl = item.audioUrl || item.audio_url;
-const yId = item.youtubeId || item.youtube_id;
-const uniquePlayerId = `yt_player_${channelId}_${index}`;
+const audioUrl = safeContentUrl(item.audioUrl || item.audio_url);
+const rawYoutubeId = item.youtubeId || item.youtube_id;
+const yId = typeof rawYoutubeId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(rawYoutubeId) ? rawYoutubeId : '';
+const uniquePlayerId = `yt_player_${++playerSequence}`;
 const thumbUrl = yId ? `https://i.ytimg.com/vi/${yId}/hqdefault.jpg` : '';
-const episodeImage = item.imageUrl || item.image_url || '';
+const episodeImage = safeContentUrl(item.imageUrl || item.image_url || '');
 const searchQuery = String(options.searchQuery || '').trim();
 let searchReasonHtml = '';
 if (searchQuery) {
@@ -125,9 +171,9 @@ ${episodeImage ? `
 <img src="${escapeHtml(episodeImage)}" alt="" class="w-14 h-14 rounded-lg object-cover border border-neutral-200 dark:border-neutral-800 shrink-0 shadow-sm">
 ` : ''}
 <div class="media-episode-body flex-1 min-w-0">
-<span class="text-[10px] text-neutral-400 font-medium">${formattedDate ? `${formattedDate} • ` : ''}${durationText}</span>
+<span class="text-[10px] text-neutral-400 font-medium">${formattedDate ? `${escapeHtml(formattedDate)} • ` : ''}${escapeHtml(durationText)}</span>
 <h3 class="media-episode-title text-xs sm:text-sm font-semibold text-neutral-900 dark:text-white leading-snug mt-0.5">
-<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="hover:underline">${displayTitle}</a>
+<a href="${escapeHtml(safeContentUrl(item.url))}" target="_blank" rel="noopener noreferrer" class="hover:underline">${displayTitle}</a>
 </h3>
 ${searchReasonHtml}
 <button type="button" class="media-bookmark-btn media-episode-save mt-2 inline-flex items-center gap-1 rounded-lg border border-neutral-300 dark:border-neutral-700 px-3 py-2 text-xs font-semibold min-h-[36px] ${options.savedIds?.has(String(item.id)) ? 'text-emerald-600 border-emerald-500' : 'text-neutral-600 dark:text-neutral-300'}" data-media-id="${escapeHtml(String(item.id ?? ''))}" aria-pressed="${options.savedIds?.has(String(item.id)) ? 'true' : 'false'}" title="${options.savedIds?.has(String(item.id)) ? 'Mentés visszavonása' : 'Mentés'}" aria-label="${options.savedIds?.has(String(item.id)) ? 'Mentés visszavonása' : 'Mentés'}">${options.savedIds?.has(String(item.id)) ? '♥' : '♡'}</button>
@@ -241,13 +287,13 @@ if (isReflektor) {
 const photo = reflektorPhoto(item);
 return `
 <article class="news-item reflektor-feature ${isRead ? 'opacity-60' : ''}" data-reflektor="true" data-id="${escapeHtml(String(item.id))}">
-  <div class="reflektor-feature-media cursor-pointer" onclick="window.openReaderModal('${escapeHtml(String(item.id))}')">
+  <div class="reflektor-feature-media cursor-pointer" onclick="window.openReaderModal(this.closest('article').dataset.id)">
     <img src="${escapeHtml(photo.url)}" alt="${photo.illustrative ? 'A témához választott illusztráció' : 'A cikk borítóképe'}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='./images/reflektor-fallback.svg'">
     <span class="reflektor-feature-image-note">${photo.illustrative ? 'Illusztráció' : 'Borítókép'}</span>
   </div>
   <div class="reflektor-feature-body">
     <div class="reflektor-feature-meta"><span class="reflektor-feature-tag">✦ 4TY REFLEKTOR</span><span>${escapeHtml(item.author?.name || '4ty Reflektor')}</span>${timeDisplay ? `<span>· ${timeDisplay}</span>` : ''}</div>
-    <div class="cursor-pointer" onclick="window.openReaderModal('${escapeHtml(String(item.id))}')">
+    <div class="cursor-pointer" onclick="window.openReaderModal(this.closest('article').dataset.id)">
       <h2 class="reflektor-feature-title">${displayTitle}</h2>
       ${item.lead ? `<p class="reflektor-feature-lead">${escapeHtml(item.lead)}</p>` : ''}
       <span class="reflektor-feature-link">Elemzés megnyitása ↗</span>
@@ -261,7 +307,7 @@ const meta = CATEGORY_META[itemCat] || { label: itemCat, badgeClass: "bg-neutral
 const clickbaitHighlight = isClickbaited ? 'border-l-2 border-l-amber-500' : '';
 const opinionBadge = (item.isOpinion || item.is_opinion) ? `<span class="text-[10px] px-1.5 py-0.5 rounded font-bold bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30">🗣️ Vélemény</span>` : '';
 const cardBorderStyle = 'hover:bg-neutral-50 dark:hover:bg-neutral-900/40 border-neutral-100 dark:border-neutral-900';
-const articleImage = item.imageUrl || item.image_url;
+const articleImage = safeContentUrl(item.imageUrl || item.image_url);
 
 // Clustering V1: a fő cikk mellett mutatjuk az ugyanahhoz az eseményhez kapcsolt forrásokat.
 const relatedSources = Array.isArray(item.relatedSources)
@@ -280,28 +326,28 @@ const relatedSourcesHtml = uniqueRelatedSources.length > 0 ? `
 📰 ${totalSourceCount} forrás ugyanerről
 </summary>
 <div class="px-2.5 pb-2.5 pt-0.5 space-y-1.5 border-t border-neutral-200 dark:border-neutral-800">
-<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="flex items-start justify-between gap-3 text-[11px] hover:underline">
+<a href="${escapeHtml(safeContentUrl(item.url))}" target="_blank" rel="noopener noreferrer" class="flex items-start justify-between gap-3 text-[11px] hover:underline">
 <span><strong>${currentSourceName}</strong> · fő cikk</span><span class="shrink-0">↗</span>
 </a>
 ${uniqueRelatedSources.map(rel => `
-<a href="${escapeHtml(rel.url)}" target="_blank" rel="noopener noreferrer" class="flex items-start justify-between gap-3 text-[11px] text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white hover:underline">
+<a href="${escapeHtml(safeContentUrl(rel.url))}" target="_blank" rel="noopener noreferrer" class="flex items-start justify-between gap-3 text-[11px] text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white hover:underline">
 <span><strong>${escapeHtml(rel.source)}</strong>${rel.original_title ? ` · ${escapeHtml(rel.original_title)}` : ''}</span><span class="shrink-0">↗</span>
 </a>`).join('')}
 </div>
 </details>` : '';
 
 return `
-<article class="news-item p-4 transition-all border-b ${cardBorderStyle} ${isRead ? 'opacity-40' : ''} ${clickbaitHighlight}" data-id="${item.id}" data-url="${escapeHtml(item.url)}">
+<article class="news-item p-4 transition-all border-b ${cardBorderStyle} ${isRead ? 'opacity-40' : ''} ${clickbaitHighlight}" data-id="${escapeHtml(String(item.id))}" data-url="${escapeHtml(safeContentUrl(item.url))}">
 <div class="flex items-center justify-between text-xs text-neutral-500 mb-1.5 font-medium">
 <div class="flex items-center gap-1.5 flex-wrap">
 <span class="text-neutral-800 dark:text-neutral-300 font-bold tracking-wide">${currentSourceName}</span>
 ${uniqueRelatedSources.length > 0 ? `<span class="text-[10px] px-1.5 py-0.5 rounded font-bold bg-sky-500/10 text-sky-700 dark:text-sky-300 border border-sky-500/25">+${uniqueRelatedSources.length} forrás</span>` : ''}
-<span class="text-[10px] px-1.5 py-0.5 rounded font-medium ${meta.badgeClass}">${meta.label}</span>
+<span class="text-[10px] px-1.5 py-0.5 rounded font-medium ${meta.badgeClass}">${escapeHtml(meta.label)}</span>
 ${opinionBadge}${timeDisplay ? `<span>•</span><span>${timeDisplay}</span>` : ''}
 </div>
 <div class="flex items-center gap-2">
 <span class="read-toggle cursor-pointer text-xs hover:text-black dark:hover:text-white">
-⏱️ ${item.readMinutes || 3}p <span class="read-icon text-neutral-400">${isRead ? '●' : '○'}</span>
+⏱️ ${escapeHtml(item.readMinutes || 3)}p <span class="read-icon text-neutral-400">${isRead ? '●' : '○'}</span>
 </span>
 <button class="hide-this-source-btn text-neutral-400 hover:text-red-500 text-xs cursor-pointer p-0.5" data-source="${currentSourceName}" title="Forrás rejtése">✕</button>
 </div>
@@ -310,13 +356,13 @@ ${opinionBadge}${timeDisplay ? `<span>•</span><span>${timeDisplay}</span>` : '
 <div class="flex gap-3.5 items-start mb-1.5">
 <div class="flex-1 min-w-0">
 <h2 class="article-title text-sm sm:text-base font-semibold text-black dark:text-white leading-snug cursor-pointer hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors">
-<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${displayTitle}</a>
+<a href="${escapeHtml(safeContentUrl(item.url))}" target="_blank" rel="noopener noreferrer">${displayTitle}</a>
 </h2>
 <p class="article-lead text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed line-clamp-2 mt-1.5 ${isCompact ? 'hidden' : ''}">
 ${escapeHtml(item.lead || '')}
 </p>
 
-<div id="tldr-${item.id}" class="hidden mt-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-neutral-850 dark:text-neutral-200 space-y-1.5">
+<div id="tldr-${escapeHtml(String(item.id))}" class="hidden mt-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-neutral-850 dark:text-neutral-200 space-y-1.5">
 <div class="font-bold text-amber-600 dark:text-amber-400 mb-1 flex items-center gap-1">
 <span>⚡ A 30 másodperces lényeg:</span>
 </div>
@@ -326,24 +372,24 @@ ${(item.bullets && item.bullets.length > 0 ? item.bullets : [item.lead])
 </ul>
 </div>
 </div>
-${articleImage ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="shrink-0 w-20 h-20 sm:w-24 sm:h-20 rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900 block shadow-sm"><img src="${escapeHtml(articleImage)}" alt="" class="w-full h-full object-cover hover:scale-105 transition-transform duration-300" loading="lazy" decoding="async"></a>` : ''}
+${articleImage ? `<a href="${escapeHtml(safeContentUrl(item.url))}" target="_blank" rel="noopener noreferrer" class="shrink-0 w-20 h-20 sm:w-24 sm:h-20 rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900 block shadow-sm"><img src="${escapeHtml(articleImage)}" alt="" class="w-full h-full object-cover hover:scale-105 transition-transform duration-300" loading="lazy" decoding="async"></a>` : ''}
 </div>
 ${relatedSourcesHtml}
 
 <div class="action-bar flex items-center justify-between text-xs text-neutral-500 pt-2 border-t border-neutral-100 dark:border-neutral-900 mt-2">
 <div class="flex items-center gap-2 flex-wrap">
 <button class="upvote-btn px-2.5 py-0.5 rounded border transition-colors flex items-center gap-1 cursor-pointer ${isUpvoted ? 'border-emerald-500 text-emerald-500 font-semibold' : 'border-neutral-300 dark:border-neutral-800 text-neutral-700 dark:text-neutral-400'}">
-<span>▲</span> <span class="count">${(item.upvotes || 0) + (isUpvoted ? 1 : 0)}</span>
+<span>▲</span> <span class="count">${escapeHtml((item.upvotes || 0) + (isUpvoted ? 1 : 0))}</span>
 </button>
 <button type="button" class="bookmark-btn news-heart-save" aria-pressed="${isSaved ? 'true' : 'false'}" aria-label="${isSaved ? 'Mentés visszavonása' : 'Cikk mentése'}" title="${isSaved ? 'Mentés visszavonása' : 'Cikk mentése'}"><span aria-hidden="true">${isSaved ? '♥' : '♡'}</span></button>
-<button class="tldr-btn px-2.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold hover:bg-amber-500/20 transition-all flex items-center gap-1 cursor-pointer" data-id="${item.id}">
+<button class="tldr-btn px-2.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold hover:bg-amber-500/20 transition-all flex items-center gap-1 cursor-pointer" data-id="${escapeHtml(String(item.id))}">
 <span>⚡ Lényeg</span>
 </button>
-<button class="share-btn px-2.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white transition-all flex items-center gap-1 cursor-pointer" data-title="${displayTitle}" data-url="${escapeHtml(item.url)}">
+<button class="share-btn px-2.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white transition-all flex items-center gap-1 cursor-pointer" data-title="${displayTitle}" data-url="${escapeHtml(safeContentUrl(item.url))}">
 <span>🔗</span> <span class="hidden sm:inline">Megosztás</span>
 </button>
 </div>
-<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="external-link text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white font-medium shrink-0 ml-1">Megnyitás ↗</a>
+<a href="${escapeHtml(safeContentUrl(item.url))}" target="_blank" rel="noopener noreferrer" class="external-link text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white font-medium shrink-0 ml-1">Megnyitás ↗</a>
 </div>
 </article>
 `;

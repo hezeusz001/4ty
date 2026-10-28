@@ -251,7 +251,14 @@ blContainer.innerHTML = '';
 (userProfile.blocked_stems || []).forEach(w => {
 const chip = document.createElement('span');
 chip.className = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20';
-chip.innerHTML = `<span>${w}</span><button class="remove-kw cursor-pointer text-red-500 font-bold" data-word="${w}">✕</button>`;
+const wordLabel = document.createElement('span');
+wordLabel.textContent = w;
+const removeButton = document.createElement('button');
+removeButton.type = 'button';
+removeButton.className = 'remove-kw cursor-pointer text-red-500 font-bold';
+removeButton.dataset.word = w;
+removeButton.textContent = '✕';
+chip.append(wordLabel, removeButton);
 blContainer.appendChild(chip);
 });
 
